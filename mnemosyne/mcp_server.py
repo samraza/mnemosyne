@@ -116,11 +116,15 @@ async def _run_stdio() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-def _build_sse_app(host: str = "127.0.0.1"):
+def _build_sse_app(host: str = "127.0.0.1", path_prefix: str = ""):
     """Build the Starlette app for SSE transport.
 
     Split out from `_run_sse` so the auth-gating + middleware-installation
     logic is testable without spinning up uvicorn.
+
+    path_prefix should be e.g. "/default" when the server is exposed via a
+    Tailscale path-prefix proxy, so that clients are told to POST to
+    /default/messages rather than /messages (which would be unreachable).
 
     Returns the configured Starlette application. Raises RuntimeError if
     host is non-loopback and MNEMOSYNE_MCP_TOKEN is unset.
@@ -143,7 +147,7 @@ def _build_sse_app(host: str = "127.0.0.1"):
 
     require_auth, token = _resolve_sse_auth(host)
 
-    transport = SseServerTransport("/messages")
+    transport = SseServerTransport(f"{path_prefix}/messages")
     server = Server("mnemosyne")
 
     @server.list_tools()
@@ -161,11 +165,11 @@ def _build_sse_app(host: str = "127.0.0.1"):
             return [TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}, indent=2))]
 
     async def handle_sse(request):
-        async with transport.connect_sse(request.scope, request.receive, request.send) as streams:
+        async with transport.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
 
     async def handle_messages(request):
-        await transport.handle_post_message(request.scope, request.receive, request.send)
+        await transport.handle_post_message(request.scope, request.receive, request._send)
 
     middleware = []
     if require_auth:
@@ -211,7 +215,7 @@ def _build_sse_app(host: str = "127.0.0.1"):
     return starlette_app
 
 
-async def _run_sse(port: int = 8080, host: str = "127.0.0.1") -> None:
+async def _run_sse(port: int = 8080, host: str = "127.0.0.1", path_prefix: str = "") -> None:
     """Run MCP server over SSE transport.
 
     Default host is 127.0.0.1 (loopback only). Binding non-loopback
@@ -225,7 +229,7 @@ async def _run_sse(port: int = 8080, host: str = "127.0.0.1") -> None:
             "Run: pip install starlette uvicorn"
         )
 
-    app = _build_sse_app(host=host)
+    app = _build_sse_app(host=host, path_prefix=path_prefix)
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     await uvicorn.Server(config).serve()
 
@@ -239,6 +243,7 @@ def run_mcp_server(
     port: int = 8080,
     bank: Optional[str] = None,
     host: str = "127.0.0.1",
+    path_prefix: str = "",
 ) -> None:
     """
     Run the Mnemosyne MCP server.
@@ -249,6 +254,8 @@ def run_mcp_server(
         bank: Default bank for operations (optional)
         host: Bind address for SSE transport (default: 127.0.0.1 -- loopback
             only). Non-loopback hosts require MNEMOSYNE_MCP_TOKEN.
+        path_prefix: Path prefix advertised to SSE clients for the POST
+            endpoint (e.g. "/default" so clients POST to /default/messages).
     """
     if bank:
         os.environ["MNEMOSYNE_MCP_BANK"] = bank
@@ -256,7 +263,7 @@ def run_mcp_server(
     if transport == "stdio":
         asyncio.run(_run_stdio())
     elif transport == "sse":
-        asyncio.run(_run_sse(port=port, host=host))
+        asyncio.run(_run_sse(port=port, host=host, path_prefix=path_prefix))
     else:
         raise ValueError(f"Unknown transport: {transport}. Use 'stdio' or 'sse'.")
 
@@ -296,7 +303,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    run_mcp_server(transport=args.transport, port=args.port, bank=args.bank, host=args.host)
+    path_prefix = f"/{args.bank}" if args.bank else ""
+    run_mcp_server(transport=args.transport, port=args.port, bank=args.bank, host=args.host, path_prefix=path_prefix)
 
 
 if __name__ == "__main__":
