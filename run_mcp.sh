@@ -86,10 +86,9 @@ do_start() {
   # shellcheck source=/dev/null
   source "${VENV_DIR}/bin/activate"
 
-  if ! mnemosyne bank list 2>/dev/null | grep -qx "${BANK}"; then
-    mnemosyne bank create "${BANK}"
-    echo "Created bank: ${BANK}"
-  fi
+  create_out=$(mnemosyne bank create "${BANK}" 2>&1) && echo "Created bank: ${BANK}" || {
+    [[ "$create_out" == *"already exists"* ]] || { echo "$create_out" >&2; exit 1; }
+  }
 
   if [[ -z "${TS_ENDPOINT}" ]]; then
     echo "Warning: TS_ENDPOINT is not set. Set it in the script or pass --ts-endpoint <host>."
